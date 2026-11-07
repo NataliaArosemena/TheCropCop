@@ -1,0 +1,21 @@
+<launch>
+  <!-- 1. Arguments -->
+  <arg name="model" default="burger"/>
+  <arg name="map_file" default="$(find the_crop_cop)/maps/garden_map.yaml"/>
+
+  <!-- 2. Run Map Server (Loads your saved garden map) -->
+  <node pkg="map_server" name="map_server" type="map_server" args="$(arg map_file)"/>
+
+  <!-- 3. Run AMCL (Localization on the saved map) -->
+  <include file="$(find turtlebot3_navigation)/launch/amcl.launch"/>
+
+  <!-- 4. Run Move Base (Navigation stack using the loaded map) -->
+  <include file="$(find turtlebot3_navigation)/launch/move_base.launch">
+    <arg name="model" value="$(arg model)"/>
+  </include>
+
+  <!-- 5. CRITICAL: Launch robot state publisher / model description so TF exists -->
+  <include file="$(find turtlebot3_bringup)/launch/turtlebot3_remote.launch">
+    <arg name="model" value="$(arg model)"/>
+  </include>
+</launch>

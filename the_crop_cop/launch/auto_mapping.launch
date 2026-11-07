@@ -1,0 +1,33 @@
+<launch>
+  <!-- 1. Launch SLAM (Gmapping) -->
+  <include file="$(find turtlebot3_slam)/launch/turtlebot3_slam.launch"/>
+
+  <!-- 2. Launch Navigation / Move Base (REQUIRED for the robot to move) -->
+  <include file="$(find turtlebot3_navigation)/launch/move_base.launch">
+    <arg name="model" value="burger"/>
+  </include>
+
+  <!-- 3. Launch Explore Lite configured for tight spaces -->
+  <node pkg="explore_lite" type="explore" respawn="false" name="explore" output="screen">
+    <!-- Frame settings -->
+    <param name="robot_base_frame" value="base_footprint"/>
+    <param name="costmap_topic" value="map"/>
+    <param name="visualize" value="true"/>
+    
+    <!-- Planner pacing -->
+    <param name="planner_frequency" value="0.5"/>
+    <param name="progress_timeout" value="20.0"/>
+    
+    <!-- Frontier scoring weights -->
+    <param name="potential_scale" value="3.0"/>
+    <param name="orientation_scale" value="0.0"/>
+    <param name="gain_scale" value="1.0"/>
+    <param name="transform_tolerance" value="0.3"/>
+    
+    <!-- Tight space optimization -->
+    <param name="min_frontier_size" value="0.3"/>
+  </node>
+
+  <!-- 4. Trigger automatic map save when explore_lite finishes and shut down -->
+  <node pkg="the_crop_cop" type="auto_save_on_finish.py" name="auto_save_on_finish" output="screen" />
+</launch>
