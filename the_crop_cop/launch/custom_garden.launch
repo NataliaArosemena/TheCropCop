@@ -1,0 +1,20 @@
+<launch>
+  <!-- Set the robot model type (burger, waffle, or waffle_pi) -->
+  <arg name="model" default="burger"/>
+  
+  <!-- Launch Gazebo with your custom garden world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="world_name" value="/home/hulks/catkin_ws/src/TheCropCop/the_crop_cop/worlds/garden.world"/>
+    <arg name="paused" value="false"/>
+    <arg name="use_sim_time" value="true"/>
+    <arg name="gui" value="true"/>
+    <arg name="headless" value="false"/>
+    <arg name="debug" value="false"/>
+  </include>
+
+  <!-- Load the robot description parameters -->
+  <param name="robot_description" command="$(find xacro)/xacro --inorder $(find turtlebot3_description)/urdf/turtlebot3_$(arg model).urdf.xacro" />
+  
+  <!-- Spawn the TurtleBot3 into your custom world at coordinates (x=0, y=0, z=0) -->
+  <node pkg="gazebo_ros" type="spawn_model" name="spawn_urdf" args="-urdf -model turtlebot3_$(arg model) -x 0.0 -y 0.0 -z 0.0 -param robot_description" />
+</launch>
