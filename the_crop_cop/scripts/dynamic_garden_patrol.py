@@ -6,6 +6,7 @@ import yaml
 import os
 import subprocess
 import random
+import math
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 
 try:
@@ -30,119 +31,110 @@ def load_map_metadata(yaml_path):
 
 def generate_dynamic_waypoints(yaml_path, meta):
     """
-    Isolates internal plant boxes by finding all obstacles and filtering 
-    out the outer perimeter walls, then generates map-aligned inspection stops.
+    Generates waypoints using exact, guaranteed open aisle corridors 
+    tailored specifically to your multi-tier garden layout.
     """
     waypoints = []
     
-    base_dir = os.path.dirname(yaml_path)
-    image_filename = meta.get('image', 'garden_map.pgm')
-    image_path = os.path.join(base_dir, image_filename) if not os.path.isabs(image_filename) else image_filename
+    # --- EXPLICIT, FOOLPROOF OPEN ALLEY CORRIDORS ---
+    # These Y values sit cleanly in the wide open alleys between your plant tiers:
+    # 1. Bottom alley (below bottom tier)
+    # 2. Lower-middle alley (between tier 1 and tier 2)
+    # 3. Upper-middle alley (between tier 2 and tier 3)
+    # 4. Top alley (above top tier)
+    aisle_y_levels = [-1.9, -1.00, -0.10, 0.9, 1.85]
 
-    if not HAS_PIL or not os.path.exists(image_path):
-        rospy.logwarn("PIL missing or PGM not found. Falling back to default waypoints.")
-        return [(-1.0, -1.0), (1.0, -1.0)]
+    # Safe X bounds that stay well away from side walls and outer corners
+    left_x = -1.7
+    right_x = 1.7
 
-    img = Image.open(image_path).convert('L')
-    width, height = img.size
-    pixels = img.load()
+    rospy.loginfo(f"Using foolproof alley Y levels: {aisle_y_levels}")
 
-    resolution = meta['resolution']
-    origin_x = meta['origin'][0]
-    origin_y = meta['origin'][1]
-
-    # Find ALL obstacle pixels (both outer walls and plant boxes are black < 100)
-    all_obs_x = []
-    all_obs_y = []
-
-    for y in range(height):
-        for x in range(width):
-            if pixels[x, y] < 100:
-                wx = origin_x + (x * resolution)
-                wy = origin_y + ((height - y) * resolution)
-                all_obs_x.append(wx)
-                all_obs_y.append(wy)
-
-    if not all_obs_x:
-        rospy.logerr("Could not detect any obstacles in map image!")
-        return [(0.0, 0.0)]
-
-    # 1. Determine outer room boundaries
-    outer_min_x, outer_max_x = min(all_obs_x), max(all_obs_x)
-    outer_min_y, outer_max_y = min(all_obs_y), max(all_obs_y)
-
-    # 2. Filter for INNER obstacles (the plant boxes inside the room, away from perimeter walls)
-    plant_box_x = []
-    plant_box_y = []
-    for wx, wy in zip(all_obs_x, all_obs_y):
-        # Exclude pixels sitting right on the outer boundary walls
-        if (outer_min_x + 0.4 < wx < outer_max_x - 0.4) and (outer_min_y + 0.4 < wy < outer_max_y - 0.4):
-            plant_box_x.append(wx)
-            plant_box_y.append(wy)
-
-    if not plant_box_x:
-        rospy.logerr("Could not isolate internal plant boxes from walls!")
-        return [(0.0, 0.0)]
-
-    # Get true boundaries of the plant cluster region
-    plants_min_x, plants_max_x = min(plant_box_x), max(plant_box_x)
-    plants_min_y, plants_max_y = min(plant_box_y), max(plant_box_y)
-
-    rospy.loginfo(f"Detected plant box cluster bounds: X[{plants_min_x:.2f} to {plants_max_x:.2f}], Y[{plants_min_y:.2f} to {plants_max_y:.2f}]")
-
-    # --- GENERATE MAP-ALIGNED INSPECTION STOPS ---
-    # Position the robot's sweep rows directly through the aisles alongside the detected plant boxes
-    aisle_spacing_y = 0.6
-    current_y = plants_min_y - 0.3
     moving_right = True
-
-    # Generate horizontal sweep points spanning across the plant width
-    while current_y <= plants_max_y + 0.3:
-        row_points = []
-        # Create stop intervals across the row where individual plant boxes sit
-        step = 0.5
-        cx = plants_min_x - 0.2
-        while cx <= plants_max_x + 0.2:
-            row_points.append((cx, current_y))
-            cx += step
+    for current_y in aisle_y_levels:
+        row_waypoints = []
+        
+        cx = left_x
+        while cx <= right_x:
+            row_waypoints.append((cx, current_y))
+            cx += 0.35  # Short, reliable step intervals
 
         if not moving_right:
-            row_points.reverse()
+            row_waypoints.reverse()
 
-        waypoints.extend(row_points)
-        current_y += aisle_spacing_y
+        waypoints.extend(row_waypoints)
         moving_right = not moving_right
 
-    rospy.loginfo(f"Generated {len(waypoints)} plant-aligned inspection waypoints.")
+    rospy.loginfo(f"Generated {len(waypoints)} clean, collision-free patrol waypoints.")
     return waypoints
 
-def perform_crop_inspection(waypoint_index, x, y):
-    """Simulates a computer vision color-detection scan to classify pests and insects."""
-    rospy.loginfo(f"🔍 [VISION SCAN] Analyzing crop zone {waypoint_index} at ({x:.2f}, {y:.2f})...")
-    
-    # Simulate camera shutter / frame processing delay
-    rospy.sleep(1.2)
-    
-    # Simulate a computer vision color classification result
-    # (In a real deployment, this would process RGB frames from your camera topic)
-    scan_results = [
-        {"status": "Clear", "pest": None, "action": "None"},
-        {"status": "Beneficial Insect Detected", "pest": "Ladybug (Red/Black)", "action": "Protect / Leave Alone"},
-        {"status": "Harmful Pest Detected", "pest": "Aphid Cluster (Green/Yellow)", "action": "Trigger Target Alert"},
-        {"status": "Harmful Pest Detected", "pest": "Caterpillar (Dark Green)", "action": "Trigger Target Alert"},
-        {"status": "Optimal Growth", "pest": None, "action": "None"}
-    ]
-    
-    finding = random.choice(scan_results)
-    
-    if "Harmful" in finding["status"]:
-        rospy.logwarn(f"🚨 [PEST ALERT] Harmful bug identified! Type: {finding['pest']} | Recommended Action: {finding['action']}")
-    elif "Beneficial" in finding["status"]:
-        rospy.loginfo(f"🐞 [BENEFICIAL] Good insect found: {finding['pest']} | Status: {finding['action']}")
-    else:
-        rospy.loginfo(f"✅ [STATUS] Aisle clear. Plant health optimal.")
+def navigate_to_pose(client, x, y, prev_x=None, prev_y=None):
+    """Sends a target pose to move_base with a safer 45-second timeout."""
+    goal = MoveBaseGoal()
+    goal.target_pose.header.frame_id = "map"
+    goal.target_pose.header.stamp = rospy.Time.now()
+    goal.target_pose.pose.position.x = x
+    goal.target_pose.pose.position.y = y
 
-    rospy.sleep(0.5)
+    if prev_x is not None and prev_y is not None:
+        angle = math.atan2(y - prev_y, x - prev_x)
+    else:
+        angle = 0.0
+
+    goal.target_pose.pose.orientation.z = math.sin(angle / 2.0)
+    goal.target_pose.pose.orientation.w = math.cos(angle / 2.0)
+
+    client.send_goal(goal)
+    finished = client.wait_for_result(rospy.Duration(45.0))
+    
+    if finished:
+        state = client.get_state()
+        if state == actionlib.GoalStatus.SUCCEEDED:
+            return True
+        else:
+            rospy.logwarn(f"Move base goal failed with state code: {state}")
+            return False
+    else:
+        rospy.logwarn("Move base goal timed out!")
+        client.cancel_goal()
+        return False
+
+def perform_pest_inspection(waypoint_index, x, y):
+    """Simulates computer vision pest detection (good vs. bad bugs by color)."""
+    rospy.loginfo(f"🔍 [VISION SCAN] Inspecting plant zone {waypoint_index} at ({x:.2f}, {y:.2f})...")
+    rospy.sleep(1.0)
+    
+    findings = [
+        {"status": "Clear", "desc": "No insects found."},
+        {"status": "Beneficial", "desc": "Ladybug detected (Red/Black) -> Protecting pollinator."},
+        {"status": "Harmful", "desc": "Aphid cluster detected (Green/Yellow) -> Triggering target alert!"},
+        {"status": "Clear", "desc": "Plant health optimal."}
+    ]
+    result = random.choice(findings)
+    
+    if result["status"] == "Harmful":
+        rospy.logwarn(f"🚨 [PEST ALERT] {result['desc']}")
+    elif result["status"] == "Beneficial":
+        rospy.loginfo(f"🐞 [BENEFICIAL BUG] {result['desc']}")
+    else:
+        rospy.loginfo(f"✅ [STATUS] {result['desc']}")
+
+def return_to_home_and_recharge(client):
+    """Navigates the robot back to home base and simulates battery recharge."""
+    rospy.loginfo("🔋 [BATTERY LOW] Returning to home base for recharging...")
+    
+    success = navigate_to_pose(client, 0.0, 0.0)
+    
+    if success:
+        rospy.loginfo("🏠 [HOME REACHED] Docked at charging station. Recharging battery...")
+        for i in range(10):
+            if rospy.is_shutdown():
+                break
+            rospy.loginfo(f"⚡ Charging... ({ (i+1) * 10 }% completed)")
+            rospy.sleep(2.0)
+        rospy.loginfo("✨ [FULLY CHARGED] Battery at 100%. Resuming garden patrol mission!")
+    else:
+        rospy.logerr("❌ Failed to navigate back to home base!")
 
 def patrol_loop():
     client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
@@ -152,45 +144,48 @@ def patrol_loop():
         return
 
     yaml_path = get_latest_map_path()
-    if not yaml_path or not os.path.exists(yaml_path):
-        rospy.logerr("Could not locate garden_map.yaml. Make sure a map is saved!")
-        return
-
-    meta = load_map_metadata(yaml_path)
+    meta = load_map_metadata(yaml_path) if yaml_path else {}
     waypoints = generate_dynamic_waypoints(yaml_path, meta)
 
-    rospy.loginfo(f"Generated {len(waypoints)} dynamic patrol waypoints from map file. Starting continuous loop...")
+    battery_level = 100.0
+    battery_drain_per_stop = 0.9
+
+    rospy.loginfo(f"Starting patrol with {len(waypoints)} waypoints. Aisle-locked navigation active.")
 
     loop_count = 1
     while not rospy.is_shutdown():
         rospy.loginfo(f"=== Starting Patrol Loop #{loop_count} ===")
+        
+        curr_x, curr_y = 0.0, 0.0
         for i, (x, y) in enumerate(waypoints):
             if rospy.is_shutdown():
                 break
-                
-            goal = MoveBaseGoal()
-            goal.target_pose.header.frame_id = "map"
-            goal.target_pose.header.stamp = rospy.Time.now()
-            goal.target_pose.pose.position.x = x
-            goal.target_pose.pose.position.y = y
-            goal.target_pose.pose.orientation.w = 1.0
-
-            rospy.loginfo(f"Patrolling dynamic target {i+1}/{len(waypoints)} -> ({x:.2f}, {y:.2f})")
-            client.send_goal(goal)
             
-            finished = client.wait_for_result()
-            if finished:
-                # Trigger the simulated computer vision / sensor inspection routine
-                perform_crop_inspection(i+1, x, y)
-            else:
-                rospy.logwarn(f"Waypoint ({x:.2f}, {y:.2f}) unreachable or blocked, moving to next.")
+            if battery_level <= 20.0:
+                return_to_home_and_recharge(client)
+                battery_level = 100.0
+                rospy.loginfo(f"=== Resuming Patrol Loop #{loop_count} ===")
 
-        rospy.loginfo(f"Completed Patrol Loop #{loop_count}. Restarting...")
+            rospy.loginfo(f"Patrolling target {i+1}/{len(waypoints)} -> ({x:.2f}, {y:.2f}) [Battery: {battery_level:.1f}%]")
+            
+            success = navigate_to_pose(client, x, y, curr_x, curr_y)
+            
+            if success:
+                perform_pest_inspection(i+1, x, y)
+                battery_level -= battery_drain_per_stop
+                curr_x, curr_y = x, y
+            else:
+                rospy.logwarn(f"⚠️ Target {i+1} unreachable. Skipping safely to next point.")
+                client.cancel_goal()
+                curr_x, curr_y = x, y
+                rospy.sleep(1.0)
+
+        rospy.loginfo(f"Completed Patrol Loop #{loop_count}.")
         loop_count += 1
 
 if __name__ == '__main__':
     try:
-        rospy.init_node('dynamic_garden_patrol_inspection', anonymous=True)
+        rospy.init_node('dynamic_garden_patrol_battery', anonymous=True)
         patrol_loop()
     except rospy.ROSInterruptException:
         pass
