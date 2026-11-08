@@ -31,41 +31,152 @@ def load_map_metadata(yaml_path):
 
 def generate_dynamic_waypoints(yaml_path, meta):
     """
-    Generates waypoints using exact, guaranteed open aisle corridors 
-    tailored specifically to your multi-tier garden layout.
+    Analyzes plant bed clusters (rows vs columns) to determine layout orientation,
+    hugs the beds tightly on outer tracks, and generates collision-free waypoints.
     """
     waypoints = []
     
-    # --- EXPLICIT, FOOLPROOF OPEN ALLEY CORRIDORS ---
-    # These Y values sit cleanly in the wide open alleys between your plant tiers:
-    # 1. Bottom alley (below bottom tier)
-    # 2. Lower-middle alley (between tier 1 and tier 2)
-    # 3. Upper-middle alley (between tier 2 and tier 3)
-    # 4. Top alley (above top tier)
-    aisle_y_levels = [-1.9, -1.00, -0.10, 0.9, 1.85]
+    base_dir = os.path.dirname(yaml_path)
+    image_filename = meta.get('image', 'garden_map.pgm')
+    image_path = os.path.join(base_dir, image_filename) if not os.path.isabs(image_filename) else image_filename
 
-    # Safe X bounds that stay well away from side walls and outer corners
-    left_x = -1.7
-    right_x = 1.7
+    if not HAS_PIL or not os.path.exists(image_path):
+        rospy.logwarn("PIL missing or PGM not found. Falling back to default waypoints.")
+        return [(-1.0, -1.0), (1.0, -1.0)]
 
-    rospy.loginfo(f"Using foolproof alley Y levels: {aisle_y_levels}")
+    img = Image.open(image_path).convert('L')
+    width, height = img.size
+    pixels = img.load()
 
-    moving_right = True
-    for current_y in aisle_y_levels:
-        row_waypoints = []
+    resolution = meta['resolution']
+    origin_x = meta['origin'][0]
+    origin_y = meta['origin'][1]
+
+    def px_to_world(px, py):
+        wx = origin_x + (px * resolution)
+        wy = origin_y + ((height - py) * resolution)
+        return wx, wy
+
+    # 1. Collect all obstacle pixels within the inner garden room
+    obs_x, obs_y = [], []
+    for py in range(height):
+        for px in range(width):
+            if pixels[px, py] < 100:
+                wx, wy = px_to_world(px, py)
+                obs_x.append(wx)
+                obs_y.append(wy)
+
+    if not obs_x:
+        rospy.logerr("Could not detect any obstacles in map image!")
+        return [(0.0, 0.0)]
+
+    wall_min_x, wall_max_x = min(obs_x), max(obs_x)
+    wall_min_y, wall_max_y = min(obs_y), max(obs_y)
+
+    # Isolate internal plant boxes (strip away outer walls)
+    internal_x = [wx for wx, wy in zip(obs_x, obs_y) if (wall_min_x + 0.3 < wx < wall_max_x - 0.3) and (wall_min_y + 0.3 < wy < wall_max_y - 0.3)]
+    internal_y = [wy for wx, wy in zip(obs_x, obs_y) if (wall_min_x + 0.3 < wx < wall_max_x - 0.3) and (wall_min_y + 0.3 < wy < wall_max_y - 0.3)]
+
+    if not internal_y or not internal_x:
+        rospy.logerr("Could not isolate plant beds from walls!")
+        return [(0.0, 0.0)]
+
+    # 2. Cluster plant boxes into Rows (Y-axis groups) and Columns (X-axis groups)
+    unique_ys = sorted(list(set([round(y, 2) for y in internal_y])))
+    row_clusters = []
+    if unique_ys:
+        cur_row = [unique_ys[0]]
+        for y in unique_ys[1:]:
+            if y - cur_row[-1] <= 0.25:
+                cur_row.append(y)
+            else:
+                row_clusters.append((min(cur_row), max(cur_row)))
+                cur_row = [y]
+        row_clusters.append((min(cur_row), max(cur_row)))
+    significant_rows = [r for r in row_clusters if (r[1] - r[0]) >= 0.15]
+    significant_rows.sort(key=lambda r: r[0], reverse=True) # Top to bottom
+
+    unique_xs = sorted(list(set([round(x, 2) for x in internal_x])))
+    col_clusters = []
+    if unique_xs:
+        cur_col = [unique_xs[0]]
+        for x in unique_xs[1:]:
+            if x - cur_col[-1] <= 0.3:
+                cur_col.append(x)
+            else:
+                col_clusters.append((min(cur_col), max(cur_col)))
+                cur_col = [x]
+        col_clusters.append((min(cur_col), max(cur_col)))
+    significant_cols = [c for c in col_clusters if (c[1] - c[0]) >= 0.15]
+
+    # 3. Detect layout structure based on bed counts (Columns vs Rows)
+    num_rows = len(significant_rows)
+    num_cols = len(significant_cols)
+    is_vertical_layout = num_cols > num_rows
+
+    rospy.loginfo(f"Bed Cluster Analysis -> Plant Rows (Tiers): {num_rows}, Plant Columns: {num_cols}. Layout Strategy: {'VERTICAL COLUMNS' if is_vertical_layout else 'HORIZONTAL ROWS'}")
+
+    waypoints = []
+    moving_forward = True
+
+    if not is_vertical_layout and significant_rows:
+        # --- HORIZONTAL SWEEPING (Rows stacked vertically, sweeping left/right) ---
+        aisle_y_levels = []
         
-        cx = left_x
-        while cx <= right_x:
-            row_waypoints.append((cx, current_y))
-            cx += 0.35  # Short, reliable step intervals
+        # Top outer row pulled tightly to the top plant bed
+        aisle_y_levels.append(significant_rows[0][1] + 0.30)
 
-        if not moving_right:
-            row_waypoints.reverse()
+        # Gaps between plant tiers
+        for i in range(len(significant_rows) - 1):
+            bottom_of_upper = significant_rows[i][0]
+            top_of_lower = significant_rows[i+1][1]
+            aisle_y_levels.append((bottom_of_upper + top_of_lower) / 2.0)
 
-        waypoints.extend(row_waypoints)
-        moving_right = not moving_right
+        # Bottom outer row pulled tightly to the bottom plant bed
+        aisle_y_levels.append(significant_rows[-1][0] - 0.30)
 
-    rospy.loginfo(f"Generated {len(waypoints)} clean, collision-free patrol waypoints.")
+        left_x = min(internal_x) + 0.35
+        right_x = max(internal_x) - 0.35
+
+        for current_y in aisle_y_levels:
+            row_waypoints = []
+            cx = left_x
+            while cx <= right_x:
+                row_waypoints.append((cx, current_y))
+                cx += 0.35
+
+            if not moving_forward:
+                row_waypoints.reverse()
+            waypoints.extend(row_waypoints)
+            moving_forward = not moving_forward
+
+    else:
+        # --- VERTICAL SWEEPING (Columns side-by-side, sweeping up/down) ---
+        aisle_x_levels = []
+        if significant_cols:
+            aisle_x_levels.append(significant_cols[0][0] - 0.30)
+            for i in range(len(significant_cols) - 1):
+                right_of_left = significant_cols[i][1]
+                left_of_right = significant_cols[i+1][0]
+                aisle_x_levels.append((right_of_left + left_of_right) / 2.0)
+            aisle_x_levels.append(significant_cols[-1][1] + 0.30)
+
+        bottom_y = significant_rows[-1][0] - 0.35 if significant_rows else wall_min_y + 0.5
+        top_y = significant_rows[0][1] + 0.35 if significant_rows else wall_max_y - 0.5
+
+        for current_x in aisle_x_levels:
+            col_waypoints = []
+            cy = bottom_y
+            while cy <= top_y:
+                col_waypoints.append((current_x, cy))
+                cy += 0.35
+
+            if not moving_forward:
+                col_waypoints.reverse()
+            waypoints.extend(col_waypoints)
+            moving_forward = not moving_forward
+
+    rospy.loginfo(f"Generated {len(waypoints)} bed-hugging, cluster-aware waypoints.")
     return waypoints
 
 def navigate_to_pose(client, x, y, prev_x=None, prev_y=None):
