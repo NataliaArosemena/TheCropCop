@@ -4,7 +4,7 @@
   
   <!-- Launch Gazebo with your custom garden world -->
   <include file="$(find gazebo_ros)/launch/empty_world.launch">
-    <arg name="world_name" value="/home/hulks/catkin_ws/src/TheCropCop/the_crop_cop/worlds/garden.world"/>
+    <arg name="world_name" value="$(find the_crop_cop)/worlds/garden.world"/>
     <arg name="paused" value="false"/>
     <arg name="use_sim_time" value="true"/>
     <arg name="gui" value="true"/>
